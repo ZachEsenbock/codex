@@ -17,6 +17,7 @@ members = [
     "ollama",
     "protocol",
     "protocol-ts",
+    "taskflow",
     "tui",
 ]
 resolver = "2"

@@ -1,0 +1,25 @@
+[package]
+name = "codex-task"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Task orchestrator for Codex CLI that spawns sub-agents from a task.md DAG."
+repository = "https://github.com/openai/codex"
+
+[[bin]]
+name = "codex-task"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "time", "signal", "sync", "io-std"] }
+futures = "0.3"
+uuid = { version = "1.8", features = ["v4"] }
+petgraph = "0.6"
+time = { version = "0.3", features = ["formatting"] }
+dirs = "5.0"
+regex = "1.10"
