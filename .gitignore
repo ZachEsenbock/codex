@@ -81,3 +81,7 @@ CHANGELOG.ignore.md
 # nix related
 .direnv
 .envrc
+
+# codex-task
+codex-rs/taskflow/target_local/
+codex-rs/tui/src/snapshots/

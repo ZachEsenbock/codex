@@ -1,0 +1,17 @@
+---
+source: tui/src/dashboard.rs
+expression: buf_to_string(&buf, area)
+---
+" Agents                                          "
+" No agents No agents to display                   "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+

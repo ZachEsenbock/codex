@@ -1,6 +1,7 @@
 use clap::ArgAction;
 use clap::Parser;
 use clap::Subcommand;
+use clap::ValueEnum;
 use codex_task::extract_yaml_front_matter;
 use codex_task::planner::auto_plan_tasks;
 use codex_task::subagent::SubAgentOptions;
@@ -110,7 +111,30 @@ enum Commands {
         /// Convenience: always pass --skip-git-repo-check to sub-agents
         #[arg(long, action = clap::ArgAction::SetTrue)]
         skip_git_repo_check: bool,
+
+        /// Run with interactive dashboard UI instead of printing to stdout
+        #[arg(long, action = ArgAction::SetTrue)]
+        ui: bool,
+
+        /// UI layout to use when --ui is enabled (tabbed|grid)
+        #[arg(long, value_enum, default_value_t = UiLayoutArg::Tabbed)]
+        ui_layout: UiLayoutArg,
     },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum UiLayoutArg {
+    Tabbed,
+    Grid,
+}
+
+impl std::fmt::Display for UiLayoutArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UiLayoutArg::Tabbed => write!(f, "tabbed"),
+            UiLayoutArg::Grid => write!(f, "grid"),
+        }
+    }
 }
 
 fn parse_task_file(path: &PathBuf) -> Result<TaskFile, TaskError> {
@@ -158,6 +182,8 @@ async fn main() -> Result<(), TaskError> {
             default_cwd,
             show_output,
             skip_git_repo_check,
+            ui,
+            ui_layout,
         } => {
             let mut tf = parse_task_file(&file)?;
             let full_task_md = fs::read_to_string(&file).unwrap_or_default();
@@ -178,6 +204,13 @@ async fn main() -> Result<(), TaskError> {
             planning_sub.time_budget_secs = time_budget_secs;
             if show_output {
                 planning_sub.show_output = true;
+            }
+            // In UI mode, never mirror sub-agent output to stdout; the
+            // dashboard consumes streams and renders them. Disable any
+            // requested show_output to prevent interleaving that corrupts
+            // the TUI.
+            if ui {
+                planning_sub.show_output = false;
             }
             planning_sub.task_md_full_text = Some(full_task_md.clone());
             if tf.tasks.is_empty() {
@@ -233,10 +266,22 @@ async fn main() -> Result<(), TaskError> {
             if show_output {
                 sub.show_output = true;
             }
+            if ui {
+                sub.show_output = false;
+            }
             sub.task_md_full_text = Some(full_task_md);
             opts.subagent = sub;
 
+            // Wire UI flags into runner options. The dashboard is initialized
+            // by callers based on these values; non-UI mode retains existing
+            // stdout printing behavior.
+            opts.ui = ui;
+            opts.ui_layout = ui_layout.to_string();
+
             let runner = Runner::new(&tf, dag, opts)?;
+            // In UI mode, the runner suppresses stdout progress messages and
+            // relies on the dashboard to present state. The underlying
+            // execution logic remains the same.
             runner.execute().await?;
         }
     }

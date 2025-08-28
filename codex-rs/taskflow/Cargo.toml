@@ -23,3 +23,15 @@ petgraph = "0.6"
 time = { version = "0.3", features = ["formatting"] }
 dirs = "5.0"
 regex = "1.10"
+ratatui = "0.29.0"
+codex-tui = { path = "../tui" }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", default-features = false, features = ["signal"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }

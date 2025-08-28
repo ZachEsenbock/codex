@@ -1,0 +1,15 @@
+---
+source: tui/src/dashboard.rs
+expression: buf_to_string(&buf, area)
+---
+" Agents                                      Task A1 — Error           "
+"  1 [E] A1            failed to start                               "
+"  2 [R] A2                                                          "
+"                                                                "
+"                                                                "
+"                                                                "
+"                                                                "
+"                                                                "
+"                                                                "
+"                                                                "
+

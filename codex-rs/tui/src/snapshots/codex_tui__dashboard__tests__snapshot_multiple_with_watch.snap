@@ -1,0 +1,19 @@
+---
+source: tui/src/dashboard.rs
+expression: buf_to_string(&buf, area)
+---
+" Agents                                      Task A2 — Running          Watch A1      "
+"  1 [R] A1 (watch)   a2: hello               a1 line1                                  "
+"  2 [R] A2           more text               a1 line2                                  "
+"  3 [D] A3                                  a1 last                                    "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+

@@ -1,0 +1,19 @@
+---
+source: tui/src/dashboard.rs
+expression: buf_to_string(&buf, area)
+---
+" Agents                                      Task Agent-X — Paused               "
+"  1 [P] Agent-X       log 1                                                   "
+"                      log 2                                                   "
+"                      log 3                                                   "
+"                      log 4                                                   "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                      Guidance (Enter to send)                                  "
+"                       Consider edge cases                                      "
+"                       Add tests                                                "
+

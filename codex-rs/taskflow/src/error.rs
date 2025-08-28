@@ -31,4 +31,16 @@ pub enum TaskError {
 
     #[error("timeout after {0} seconds")]
     Timeout(u64),
+
+    #[error("signal operation not supported on this platform: {0}")]
+    SignalUnsupported(&'static str),
+
+    #[error("failed to send signal: {0}")]
+    Signal(String),
+
+    #[error("child stdin is not available or closed")]
+    StdinClosed,
+
+    #[error("injection write failed: {0}")]
+    Injection(String),
 }

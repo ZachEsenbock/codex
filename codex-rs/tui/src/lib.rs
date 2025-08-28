@@ -36,6 +36,7 @@ mod cli;
 mod clipboard_paste;
 mod common;
 pub mod custom_terminal;
+mod dashboard;
 mod diff_render;
 mod exec_command;
 mod file_search;
@@ -45,6 +46,7 @@ pub mod insert_history;
 pub mod live_wrap;
 mod markdown;
 mod markdown_stream;
+mod multi_agent_dashboard;
 pub mod onboarding;
 mod render;
 mod session_log;
@@ -68,6 +70,10 @@ mod updates;
 use color_eyre::owo_colors::OwoColorize;
 
 pub use cli::Cli;
+pub use multi_agent_dashboard::DashboardAgentStatus;
+pub use multi_agent_dashboard::MultiAgentCallbacks;
+pub use multi_agent_dashboard::MultiAgentDashboard;
+pub use multi_agent_dashboard::MultiAgentUpdate;
 
 use crate::onboarding::TrustDirectorySelection;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;

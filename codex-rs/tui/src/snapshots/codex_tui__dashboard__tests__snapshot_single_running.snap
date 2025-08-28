@@ -1,0 +1,19 @@
+---
+source: tui/src/dashboard.rs
+expression: buf_to_string(&buf, area)
+---
+" Agents                                      Task T-1 — Running                    "
+"  1 [R] T-1           boot                                                       "
+"                      starting agent                                             "
+"                      doing work                                                 "
+"                      producing output                                           "
+"                      done                                                       "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+

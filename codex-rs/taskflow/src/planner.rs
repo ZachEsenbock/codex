@@ -81,7 +81,7 @@ Constraints:
         depends_on: vec![],
         env: Default::default(),
         retries: Some(0),
-        timeout_secs: Some(300),
+        timeout_secs: Some(1200),
         cwd: Some(workdir.display().to_string()),
     };
 
