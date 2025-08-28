@@ -223,21 +223,18 @@ impl DashboardState {
                                 text,
                             });
                         }
-                    } else {
-                        if let Some(agent) = self.agents.get_mut(self.focused) {
-                            agent.compose.push('\n');
-                        }
+                    } else if let Some(agent) = self.agents.get_mut(self.focused) {
+                        agent.compose.push('\n');
                     }
                 }
             }
 
             // Ctrl+J inserts a newline while composing.
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if composing {
-                    if let Some(agent) = self.agents.get_mut(self.focused) {
+                if composing
+                    && let Some(agent) = self.agents.get_mut(self.focused) {
                         agent.compose.push('\n');
                     }
-                }
             }
 
             // Tab cycles focus; Shift+Tab (or BackTab) cycles backwards.
@@ -290,16 +287,13 @@ impl DashboardState {
             KeyCode::Char('w') if key.modifiers.is_empty() => {
                 if !composing {
                     self.watch_open = !self.watch_open;
-                    if self.watch_open {
-                        if self.watch_target.is_none() {
+                    if self.watch_open
+                        && self.watch_target.is_none() {
                             self.watch_target = self.default_watch_target();
                         }
-                    }
                     actions.push(DashboardAction::ToggleWatch);
-                } else {
-                    if let Some(agent) = self.agents.get_mut(self.focused) {
-                        agent.compose.push('w');
-                    }
+                } else if let Some(agent) = self.agents.get_mut(self.focused) {
+                    agent.compose.push('w');
                 }
             }
 
@@ -323,20 +317,17 @@ impl DashboardState {
 
             // While composing, accept basic text editing.
             KeyCode::Char(c) => {
-                if composing {
-                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                        if let Some(agent) = self.agents.get_mut(self.focused) {
+                if composing
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                        && let Some(agent) = self.agents.get_mut(self.focused) {
                             agent.compose.push(c);
                         }
-                    }
-                }
             }
             KeyCode::Backspace => {
-                if composing {
-                    if let Some(agent) = self.agents.get_mut(self.focused) {
+                if composing
+                    && let Some(agent) = self.agents.get_mut(self.focused) {
                         agent.compose.pop();
                     }
-                }
             }
             KeyCode::Esc => {
                 // Ignore for now; could cancel compose in a later iteration.
@@ -411,8 +402,15 @@ impl DashboardState {
                 AgentStatus::Error => "E".red(),
             };
 
+            // Make the selected agent's number clearly stand out.
+            let index_span: Span<'static> = if is_focus {
+                format!("{:>2} ", idx).cyan().bold()
+            } else {
+                format!("{:>2} ", idx).dim()
+            };
+
             let mut spans: Vec<Span<'static>> = vec![
-                Span::raw(format!("{:>2} ", idx)).dim(),
+                index_span,
                 Span::raw("["),
                 status_marker,
                 Span::raw("] "),
@@ -623,9 +621,9 @@ mod tests {
     #[test]
     fn toggle_watch_and_change_target() {
         let mut d = make_dash(3);
-        assert_eq!(d.watch_open, false);
+        assert!(!d.watch_open);
         let acts = d.handle_key_event(ev(KeyCode::Char('w')));
-        assert_eq!(d.watch_open, true);
+        assert!(d.watch_open);
         assert_eq!(acts, vec![DashboardAction::ToggleWatch]);
         assert!(d.watch_target.is_some());
 

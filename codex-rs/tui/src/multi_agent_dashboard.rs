@@ -198,11 +198,10 @@ impl MultiAgentDashboard {
         for a in actions {
             match a {
                 DashboardAction::PauseAgent { index } => {
-                    if let Some(cb) = &self.callbacks.on_pause {
-                        if let Some(agent) = self.state.agents.get(index) {
+                    if let Some(cb) = &self.callbacks.on_pause
+                        && let Some(agent) = self.state.agents.get(index) {
                             cb(agent.task_id.clone());
                         }
-                    }
                 }
                 DashboardAction::ResumeWithGuidance { index, text } => {
                     // Send guidance first, then resume.
@@ -235,34 +234,30 @@ impl MultiAgentDashboard {
                 status,
                 banner,
             } => {
-                if let Some(&idx) = self.id_to_index.get(&task_id) {
-                    if let Some(a) = self.state.agents.get_mut(idx) {
+                if let Some(&idx) = self.id_to_index.get(&task_id)
+                    && let Some(a) = self.state.agents.get_mut(idx) {
                         a.log = log;
                         a.status = status;
                         a.banner = banner;
                     }
-                }
             }
             MultiAgentUpdate::AppendLines { task_id, lines } => {
-                if let Some(&idx) = self.id_to_index.get(&task_id) {
-                    if let Some(a) = self.state.agents.get_mut(idx) {
+                if let Some(&idx) = self.id_to_index.get(&task_id)
+                    && let Some(a) = self.state.agents.get_mut(idx) {
                         a.log.extend(lines);
                     }
-                }
             }
             MultiAgentUpdate::SetStatus { task_id, status } => {
-                if let Some(&idx) = self.id_to_index.get(&task_id) {
-                    if let Some(a) = self.state.agents.get_mut(idx) {
+                if let Some(&idx) = self.id_to_index.get(&task_id)
+                    && let Some(a) = self.state.agents.get_mut(idx) {
                         a.status = status;
                     }
-                }
             }
             MultiAgentUpdate::SetBanner { task_id, banner } => {
-                if let Some(&idx) = self.id_to_index.get(&task_id) {
-                    if let Some(a) = self.state.agents.get_mut(idx) {
+                if let Some(&idx) = self.id_to_index.get(&task_id)
+                    && let Some(a) = self.state.agents.get_mut(idx) {
                         a.banner = banner;
                     }
-                }
             }
         }
     }
