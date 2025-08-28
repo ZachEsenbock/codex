@@ -89,39 +89,12 @@ Constraints:
     let _ = tokio::fs::create_dir_all(&log_dir).await;
     let res = run_subagent(&workdir, primary, &task, subagent, &log_dir).await?;
 
-    // Extract candidate YAML snippets from stdout and try to parse them in order of confidence.
+    // Extract candidate YAML snippets from stdout and try to parse them.
+    // When multiple candidates exist (e.g., due to retries/partial outputs),
+    // prefer the LAST valid candidate which most closely reflects the final intent.
     let stdout = res.stdout;
-    let candidates = extract_yaml_candidates(&stdout);
-
-    // Try parsing all candidates and return the first one that passes a basic sanity
-    // check (no missing dependencies, no duplicates). Prefer top-level `tasks:` docs.
-    for candidate in &candidates {
-        let clean = sanitize_yaml_candidate(candidate);
-        if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&clean) {
-            if let Some(tasks_val) = doc.get("tasks") {
-                if let Ok(tasks) = serde_yaml::from_value::<Vec<TaskSpec>>(tasks_val.clone()) {
-                    if validate_tasks(&tasks).is_ok() {
-                        return Ok(tasks);
-                    }
-                }
-            }
-        }
-    }
-    for candidate in &candidates {
-        let clean = sanitize_yaml_candidate(candidate);
-        if let Ok(gen_tf) = serde_yaml::from_str::<TaskFile>(&clean) {
-            if validate_tasks(&gen_tf.tasks).is_ok() {
-                return Ok(gen_tf.tasks);
-            }
-        }
-    }
-    for candidate in &candidates {
-        let clean = sanitize_yaml_candidate(candidate);
-        if let Ok(list) = serde_yaml::from_str::<Vec<TaskSpec>>(&clean) {
-            if validate_tasks(&list).is_ok() {
-                return Ok(list);
-            }
-        }
+    if let Some(tasks) = parse_tasks_from_output(&stdout) {
+        return Ok(tasks);
     }
 
     Err(TaskError::InvalidTaskFile(format!(
@@ -130,12 +103,51 @@ Constraints:
     )))
 }
 
+/// Parse the planner stdout and return the last valid tasks list found, if any.
+pub(crate) fn parse_tasks_from_output(output: &str) -> Option<Vec<TaskSpec>> {
+    let candidates = extract_yaml_candidates(output);
+
+    // Try parsing all candidates and return the LAST one that passes a basic
+    // sanity check (no missing dependencies, no duplicates). Prefer top-level `tasks:` docs.
+    for candidate in candidates.iter().rev() {
+        let clean = sanitize_yaml_candidate(candidate);
+        if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&clean) {
+            if let Some(tasks_val) = doc.get("tasks") {
+                if let Ok(tasks) = serde_yaml::from_value::<Vec<TaskSpec>>(tasks_val.clone()) {
+                    if validate_tasks(&tasks).is_ok() {
+                        return Some(tasks);
+                    }
+                }
+            }
+        }
+    }
+    for candidate in candidates.iter().rev() {
+        let clean = sanitize_yaml_candidate(candidate);
+        if let Ok(gen_tf) = serde_yaml::from_str::<TaskFile>(&clean) {
+            if validate_tasks(&gen_tf.tasks).is_ok() {
+                return Some(gen_tf.tasks);
+            }
+        }
+    }
+    for candidate in candidates.iter().rev() {
+        let clean = sanitize_yaml_candidate(candidate);
+        if let Ok(list) = serde_yaml::from_str::<Vec<TaskSpec>>(&clean) {
+            if validate_tasks(&list).is_ok() {
+                return Some(list);
+            }
+        }
+    }
+    None
+}
+
 fn extract_yaml_candidates(output: &str) -> Vec<&str> {
     let mut candidates: Vec<&str> = Vec::new();
 
     // 1) fenced YAML code blocks: ```yaml ... ``` and ```yml ... ``` (most explicit, highest priority)
     if let Ok(re) = Regex::new(r"(?s)```ya?ml\s*(.*?)\s*```") {
-        // collect fenced blocks, but prefer later ones by pushing in encounter order
+        // Collect fenced blocks in encounter order; we will prefer the last valid
+        // one during parsing to capture the final intended plan when multiple
+        // blocks are present.
         for caps in re.captures_iter(output) {
             if let Some(m) = caps.get(1) {
                 candidates.push(m.as_str());
@@ -249,4 +261,50 @@ fn validate_tasks(tasks: &[TaskSpec]) -> Result<(), TaskError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefers_last_valid_yaml_block() {
+        // Simulate a noisy stream with an early, minimal YAML and a later, final YAML.
+        let output = r#"
+[2025-08-28T15:23:28] codex
+```yaml
+tasks:
+  - id: a
+    agent: primary
+    instructions: "do a"
+    depends_on: []
+  - id: b
+    agent: primary
+    instructions: "do b"
+    depends_on: [a]
+```
+[2025-08-28T15:23:30] stream error: stream disconnected before completion: ...
+[2025-08-28T15:23:32] recovering
+```yaml
+tasks:
+  - id: research
+    agent: research
+    instructions: "r"
+    depends_on: []
+  - id: build
+    agent: backend
+    instructions: "b"
+    depends_on: [research]
+  - id: test
+    agent: qa
+    instructions: "t"
+    depends_on: [build]
+```
+misc trailing text
+"#;
+
+        let tasks = parse_tasks_from_output(output).expect("should parse tasks");
+        let ids: Vec<_> = tasks.into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["research", "build", "test"]);
+    }
 }
