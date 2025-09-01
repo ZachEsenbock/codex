@@ -48,6 +48,7 @@ mod markdown;
 mod markdown_stream;
 mod multi_agent_dashboard;
 pub mod onboarding;
+mod pager_overlay;
 mod render;
 mod session_log;
 mod shimmer;
@@ -55,7 +56,6 @@ mod slash_command;
 mod status_indicator_widget;
 mod streaming;
 mod text_formatting;
-mod transcript_app;
 mod tui;
 mod user_approval_widget;
 
@@ -66,8 +66,6 @@ mod chatwidget_stream_tests;
 
 #[cfg(not(debug_assertions))]
 mod updates;
-#[cfg(not(debug_assertions))]
-use color_eyre::owo_colors::OwoColorize;
 
 pub use cli::Cli;
 pub use multi_agent_dashboard::DashboardAgentStatus;
@@ -134,6 +132,7 @@ pub async fn run_main(
         base_instructions: None,
         include_plan_tool: Some(true),
         include_apply_patch_tool: None,
+        include_view_image_tool: None,
         disable_response_storage: cli.oss.then_some(true),
         show_raw_agent_reasoning: cli.oss.then_some(true),
         tools_web_search_request: cli.web_search.then_some(true),

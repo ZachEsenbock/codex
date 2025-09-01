@@ -15,6 +15,7 @@ use codex_apply_patch::MaybeApplyPatchVerified;
 use codex_apply_patch::maybe_parse_apply_patch_verified;
 use codex_login::AuthManager;
 use codex_protocol::protocol::ConversationHistoryResponseEvent;
+use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use futures::prelude::*;
@@ -62,6 +63,7 @@ use crate::exec_env::create_env;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_tool_call::handle_mcp_tool_call;
 use crate::model_family::find_family_for_model;
+use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ApplyPatchToolArgs;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::ToolsConfigParams;
@@ -87,6 +89,7 @@ use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::FileChange;
 use crate::protocol::InputItem;
+use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::Op;
 use crate::protocol::PatchApplyBeginEvent;
 use crate::protocol::PatchApplyEndEvent;
@@ -98,6 +101,7 @@ use crate::protocol::Submission;
 use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TurnDiffEvent;
 use crate::protocol::WebSearchBeginEvent;
+use crate::protocol::WebSearchEndEvent;
 use crate::rollout::RolloutRecorder;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_command_safety;
@@ -108,6 +112,7 @@ use crate::user_notification::UserNotification;
 use crate::util::backoff;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::LocalShellAction;
@@ -116,6 +121,7 @@ use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ShellToolCallParams;
+use codex_protocol::models::WebSearchAction;
 
 // A convenience extension trait for acquiring mutex locks where poisoning is
 // unrecoverable and should abort the program. This avoids scattered `.unwrap()`
@@ -516,6 +522,7 @@ impl Session {
                 include_apply_patch_tool: config.include_apply_patch_tool,
                 include_web_search_request: config.tools_web_search_request,
                 use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                include_view_image_tool: config.include_view_image_tool,
             }),
             user_instructions,
             base_instructions,
@@ -650,9 +657,17 @@ impl Session {
     }
 
     pub fn notify_approval(&self, sub_id: &str, decision: ReviewDecision) {
-        let mut state = self.state.lock_unchecked();
-        if let Some(tx_approve) = state.pending_approvals.remove(sub_id) {
-            tx_approve.send(decision).ok();
+        let entry = {
+            let mut state = self.state.lock_unchecked();
+            state.pending_approvals.remove(sub_id)
+        };
+        match entry {
+            Some(tx_approve) => {
+                tx_approve.send(decision).ok();
+            }
+            None => {
+                warn!("No pending approval found for sub_id: {sub_id}");
+            }
         }
     }
 
@@ -1079,6 +1094,9 @@ async fn submission_loop(
                 let mut updated_config = (*config).clone();
                 updated_config.model = effective_model.clone();
                 updated_config.model_family = effective_family.clone();
+                if let Some(model_info) = get_model_info(&effective_family) {
+                    updated_config.model_context_window = Some(model_info.context_window);
+                }
 
                 let client = ModelClient::new(
                     Arc::new(updated_config),
@@ -1103,6 +1121,7 @@ async fn submission_loop(
                     include_apply_patch_tool: config.include_apply_patch_tool,
                     include_web_search_request: config.tools_web_search_request,
                     use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                    include_view_image_tool: config.include_view_image_tool,
                 });
 
                 let new_turn_context = TurnContext {
@@ -1152,6 +1171,7 @@ async fn submission_loop(
                 if let Err(items) = sess.inject_input(items) {
                     // Derive a fresh TurnContext for this turn using the provided overrides.
                     let provider = turn_context.client.get_provider();
+                    let auth_manager = turn_context.client.get_auth_manager();
 
                     // Derive a model family for the requested model; fall back to the session's.
                     let model_family = find_family_for_model(&model)
@@ -1161,12 +1181,15 @@ async fn submission_loop(
                     let mut per_turn_config = (*config).clone();
                     per_turn_config.model = model.clone();
                     per_turn_config.model_family = model_family.clone();
+                    if let Some(model_info) = get_model_info(&model_family) {
+                        per_turn_config.model_context_window = Some(model_info.context_window);
+                    }
 
                     // Build a new client with per‑turn reasoning settings.
                     // Reuse the same provider and session id; auth defaults to env/API key.
                     let client = ModelClient::new(
                         Arc::new(per_turn_config),
-                        None,
+                        auth_manager,
                         provider,
                         effort,
                         summary,
@@ -1184,6 +1207,7 @@ async fn submission_loop(
                             include_web_search_request: config.tools_web_search_request,
                             use_streamable_shell_tool: config
                                 .use_experimental_streamable_shell_tool,
+                            include_view_image_tool: config.include_view_image_tool,
                         }),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
@@ -1272,6 +1296,27 @@ async fn submission_loop(
                 };
                 if let Err(e) = tx_event.send(event).await {
                     warn!("failed to send McpListToolsResponse event: {e}");
+                }
+            }
+            Op::ListCustomPrompts => {
+                let tx_event = sess.tx_event.clone();
+                let sub_id = sub.id.clone();
+
+                let custom_prompts: Vec<CustomPrompt> =
+                    if let Some(dir) = crate::custom_prompts::default_prompts_dir() {
+                        crate::custom_prompts::discover_prompts_in(&dir).await
+                    } else {
+                        Vec::new()
+                    };
+
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
+                        custom_prompts,
+                    }),
+                };
+                if let Err(e) = tx_event.send(event).await {
+                    warn!("failed to send ListCustomPromptsResponse event: {e}");
                 }
             }
             Op::Compact => {
@@ -1369,7 +1414,9 @@ async fn run_task(
     }
     let event = Event {
         id: sub_id.clone(),
-        msg: EventMsg::TaskStarted,
+        msg: EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: turn_context.client.get_model_context_window(),
+        }),
     };
     if sess.tx_event.send(event).await.is_err() {
         return;
@@ -1732,13 +1779,12 @@ async fn try_run_turn(
                 .await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::WebSearchCallBegin { call_id, query } => {
-                let q = query.unwrap_or_else(|| "Searching Web...".to_string());
+            ResponseEvent::WebSearchCallBegin { call_id } => {
                 let _ = sess
                     .tx_event
                     .send(Event {
                         id: sub_id.to_string(),
-                        msg: EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id, query: q }),
+                        msg: EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id }),
                     })
                     .await;
             }
@@ -1769,11 +1815,6 @@ async fn try_run_turn(
                 return Ok(output);
             }
             ResponseEvent::OutputTextDelta(delta) => {
-                {
-                    let mut st = sess.state.lock_unchecked();
-                    st.history.append_assistant_text(&delta);
-                }
-
                 let event = Event {
                     id: sub_id.to_string(),
                     msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }),
@@ -1816,9 +1857,12 @@ async fn run_compact_task(
     input: Vec<InputItem>,
     compact_instructions: String,
 ) {
+    let model_context_window = turn_context.client.get_model_context_window();
     let start_event = Event {
         id: sub_id.clone(),
-        msg: EventMsg::TaskStarted,
+        msg: EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window,
+        }),
     };
     if sess.tx_event.send(start_event).await.is_err() {
         return;
@@ -1872,6 +1916,12 @@ async fn run_compact_task(
     }
 
     sess.remove_task(&sub_id);
+
+    {
+        let mut state = sess.state.lock_unchecked();
+        state.history.keep_last_messages(1);
+    }
+
     let event = Event {
         id: sub_id.clone(),
         msg: EventMsg::AgentMessage(AgentMessageEvent {
@@ -1886,9 +1936,6 @@ async fn run_compact_task(
         }),
     };
     sess.send_event(event).await;
-
-    let mut state = sess.state.lock_unchecked();
-    state.history.keep_last_messages(1);
 }
 
 async fn handle_response_item(
@@ -2036,6 +2083,17 @@ async fn handle_response_item(
             debug!("unexpected CustomToolCallOutput from stream");
             None
         }
+        ResponseItem::WebSearchCall { id, action, .. } => {
+            if let WebSearchAction::Search { query } = action {
+                let call_id = id.unwrap_or_else(|| "".to_string());
+                let event = Event {
+                    id: sub_id.to_string(),
+                    msg: EventMsg::WebSearchEnd(WebSearchEndEvent { call_id, query }),
+                };
+                sess.tx_event.send(event).await.ok();
+            }
+            None
+        }
         ResponseItem::Other => None,
     };
     Ok(output)
@@ -2067,6 +2125,36 @@ async fn handle_function_call(
                 call_id,
             )
             .await
+        }
+        "view_image" => {
+            #[derive(serde::Deserialize)]
+            struct SeeImageArgs {
+                path: String,
+            }
+            let args = match serde_json::from_str::<SeeImageArgs>(&arguments) {
+                Ok(a) => a,
+                Err(e) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: format!("failed to parse function arguments: {e}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+            let abs = turn_context.resolve_path(Some(args.path));
+            let output = match sess.inject_input(vec![InputItem::LocalImage { path: abs }]) {
+                Ok(()) => FunctionCallOutputPayload {
+                    content: "attached local image path".to_string(),
+                    success: Some(true),
+                },
+                Err(_) => FunctionCallOutputPayload {
+                    content: "unable to attach image (no active task)".to_string(),
+                    success: Some(false),
+                },
+            };
+            ResponseInputItem::FunctionCallOutput { call_id, output }
         }
         "apply_patch" => {
             let args = match serde_json::from_str::<ApplyPatchToolArgs>(&arguments) {
@@ -2454,11 +2542,15 @@ async fn handle_container_exec_with_params(
                 sandbox_type,
                 sandbox_policy: &turn_context.sandbox_policy,
                 codex_linux_sandbox_exe: &sess.codex_linux_sandbox_exe,
-                stdout_stream: Some(StdoutStream {
-                    sub_id: sub_id.clone(),
-                    call_id: call_id.clone(),
-                    tx_event: sess.tx_event.clone(),
-                }),
+                stdout_stream: if exec_command_context.apply_patch.is_some() {
+                    None
+                } else {
+                    Some(StdoutStream {
+                        sub_id: sub_id.clone(),
+                        call_id: call_id.clone(),
+                        tx_event: sess.tx_event.clone(),
+                    })
+                },
             },
         )
         .await;
@@ -2587,11 +2679,15 @@ async fn handle_sandbox_error(
                         sandbox_type: SandboxType::None,
                         sandbox_policy: &turn_context.sandbox_policy,
                         codex_linux_sandbox_exe: &sess.codex_linux_sandbox_exe,
-                        stdout_stream: Some(StdoutStream {
-                            sub_id: sub_id.clone(),
-                            call_id: call_id.clone(),
-                            tx_event: sess.tx_event.clone(),
-                        }),
+                        stdout_stream: if exec_command_context.apply_patch.is_some() {
+                            None
+                        } else {
+                            Some(StdoutStream {
+                                sub_id: sub_id.clone(),
+                                call_id: call_id.clone(),
+                                tx_event: sess.tx_event.clone(),
+                            })
+                        },
                     },
                 )
                 .await;
@@ -2816,15 +2912,9 @@ async fn drain_to_completed(
                 response_id: _,
                 token_usage,
             }) => {
-                let token_usage = match token_usage {
-                    Some(usage) => usage,
-                    None => {
-                        return Err(CodexErr::Stream(
-                            "token_usage was None in ResponseEvent::Completed".into(),
-                            None,
-                        ));
-                    }
-                };
+                // some providers don't return token usage, so we default
+                // TODO: consider approximate token usage
+                let token_usage = token_usage.unwrap_or_default();
                 sess.tx_event
                     .send(Event {
                         id: sub_id.to_string(),
@@ -2832,6 +2922,7 @@ async fn drain_to_completed(
                     })
                     .await
                     .ok();
+
                 return Ok(());
             }
             Ok(_) => continue,
