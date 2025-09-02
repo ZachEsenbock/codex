@@ -13,6 +13,13 @@ use codex_task::TaskFile;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use tokio::sync::mpsc;
+
+// TUI planner overlay
+use codex_tui::PlannerDashboard;
+use codex_tui::PlannerUpdate;
+use ratatui::style::Stylize as _;
+use ratatui::text::Line as RtLine;
 
 fn ensure_default_specialized_agents(tf: &mut TaskFile) {
     if tf.agents.is_empty() {
@@ -227,9 +234,49 @@ async fn main() -> Result<(), TaskError> {
                     .unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                     });
-                let tasks =
-                    auto_plan_tasks(&tf, &body, &default_cwd_effective, &planning_sub).await?;
-                tf.tasks = tasks;
+                if ui {
+                    // Start planner overlay and stream logs into it.
+                    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<PlannerUpdate>();
+                    let ui_task = tokio::spawn(async move {
+                        let dash = PlannerDashboard::new()?;
+                        dash.run(ui_rx).await
+                    });
+
+                    // Set a small banner to indicate planning start (optional)
+                    let _ = ui_tx.send(PlannerUpdate::SetBanner {
+                        banner: Some(RtLine::from("Auto-planning…".to_string().cyan())),
+                    });
+
+                    // Run planner with streaming into the overlay
+                    let tasks_res = auto_plan_tasks(
+                        &tf,
+                        &body,
+                        &default_cwd_effective,
+                        &planning_sub,
+                        Some(ui_tx.clone()),
+                    )
+                    .await;
+
+                    match tasks_res {
+                        Ok(tasks) => {
+                            // Close the overlay (planner already marked Done)
+                            drop(ui_tx);
+                            let _ = ui_task.await;
+                            tf.tasks = tasks;
+                        }
+                        Err(e) => {
+                            // Status/banner already set by planner; just close overlay and exit with error
+                            drop(ui_tx);
+                            let _ = ui_task.await;
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    let tasks =
+                        auto_plan_tasks(&tf, &body, &default_cwd_effective, &planning_sub, None)
+                            .await?;
+                    tf.tasks = tasks;
+                }
             }
             let dag = Dag::build(&tf)?;
 

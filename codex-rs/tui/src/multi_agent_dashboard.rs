@@ -7,9 +7,12 @@ use crate::tui::TuiEvent;
 use crate::tui::{self};
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
+use std::path::PathBuf;
 
 use crate::dashboard::AgentPaneState;
 use crate::dashboard::AgentStatus;
@@ -45,6 +48,14 @@ pub enum MultiAgentUpdate {
         task_id: String,
         banner: Option<Line<'static>>,
     },
+    /// Provide the per-attempt log file paths so the UI can page older content.
+    SetLogFiles {
+        task_id: String,
+        stdout: PathBuf,
+        stderr: PathBuf,
+    },
+    /// Increment the visible peer-communication counter for an agent.
+    BumpRouteCount { task_id: String },
 }
 
 /// Callback hooks for controlling agents. All hooks are optional; if not provided,
@@ -85,6 +96,7 @@ pub struct MultiAgentDashboard {
     frame: FrameRequester,
     callbacks: MultiAgentCallbacks,
     exit_requested: bool,
+    updates_closed: bool,
 }
 
 impl MultiAgentDashboard {
@@ -111,6 +123,7 @@ impl MultiAgentDashboard {
             frame,
             callbacks,
             exit_requested: false,
+            updates_closed: false,
         })
     }
 
@@ -135,6 +148,7 @@ impl MultiAgentDashboard {
                         TuiEvent::Key(key) => self.on_key(key),
                         TuiEvent::Paste(_) => { /* ignore paste in this dashboard */ }
                         TuiEvent::AttachImage { .. } => { /* ignore */ }
+                        TuiEvent::Mouse(m) => self.on_mouse(m),
                         TuiEvent::Draw => self.draw()?,
                     }
                     if self.exit_requested {
@@ -148,11 +162,12 @@ impl MultiAgentDashboard {
                             self.frame.schedule_frame();
                         }
                         None => {
-                            // Channel closed — if everyone is done (or error) and not composing, we can exit.
-                            if self.all_agents_terminal() && !self.state.focused_is_composing() {
-                                break;
-                            } else {
-                                // Still allow user to navigate/view until all done; schedule redraws on input only.
+                            // Updates channel closed. Mark and, if all agents are terminal,
+                            // show a completion hint and wait for an explicit quit key.
+                            self.updates_closed = true;
+                            if self.all_agents_terminal() {
+                                self.state.run_complete = true;
+                                self.frame.schedule_frame();
                             }
                         }
                     }
@@ -193,15 +208,24 @@ impl MultiAgentDashboard {
             self.exit_requested = true;
             return;
         }
+        // When run has completed (all agents done/error and updates closed), allow 'q' to quit UI.
+        if self.state.run_complete
+            && matches!(key.code, crossterm::event::KeyCode::Char('q'))
+            && key.modifiers.is_empty()
+        {
+            self.exit_requested = true;
+            return;
+        }
         // Route to dashboard handler and translate emitted actions into callbacks.
         let actions = self.state.handle_key_event(key);
         for a in actions {
             match a {
                 DashboardAction::PauseAgent { index } => {
                     if let Some(cb) = &self.callbacks.on_pause
-                        && let Some(agent) = self.state.agents.get(index) {
-                            cb(agent.task_id.clone());
-                        }
+                        && let Some(agent) = self.state.agents.get(index)
+                    {
+                        cb(agent.task_id.clone());
+                    }
                 }
                 DashboardAction::ResumeWithGuidance { index, text } => {
                     // Send guidance first, then resume.
@@ -226,6 +250,20 @@ impl MultiAgentDashboard {
         self.frame.schedule_frame();
     }
 
+    fn on_mouse(&mut self, me: MouseEvent) {
+        match me.kind {
+            MouseEventKind::ScrollUp => {
+                self.state.mouse_scroll_at(me.column, me.row, true);
+                self.frame.schedule_frame();
+            }
+            MouseEventKind::ScrollDown => {
+                self.state.mouse_scroll_at(me.column, me.row, false);
+                self.frame.schedule_frame();
+            }
+            _ => {}
+        }
+    }
+
     fn apply_update(&mut self, update: MultiAgentUpdate) {
         match update {
             MultiAgentUpdate::Snapshot {
@@ -235,29 +273,51 @@ impl MultiAgentDashboard {
                 banner,
             } => {
                 if let Some(&idx) = self.id_to_index.get(&task_id)
-                    && let Some(a) = self.state.agents.get_mut(idx) {
-                        a.log = log;
-                        a.status = status;
-                        a.banner = banner;
-                    }
+                    && let Some(a) = self.state.agents.get_mut(idx)
+                {
+                    a.log_src.replace_live_tail(log);
+                    a.status = status;
+                    a.banner = banner;
+                }
             }
             MultiAgentUpdate::AppendLines { task_id, lines } => {
                 if let Some(&idx) = self.id_to_index.get(&task_id)
-                    && let Some(a) = self.state.agents.get_mut(idx) {
-                        a.log.extend(lines);
-                    }
+                    && let Some(a) = self.state.agents.get_mut(idx)
+                {
+                    a.log_src.append_live(lines);
+                }
             }
             MultiAgentUpdate::SetStatus { task_id, status } => {
                 if let Some(&idx) = self.id_to_index.get(&task_id)
-                    && let Some(a) = self.state.agents.get_mut(idx) {
-                        a.status = status;
-                    }
+                    && let Some(a) = self.state.agents.get_mut(idx)
+                {
+                    a.status = status;
+                }
             }
             MultiAgentUpdate::SetBanner { task_id, banner } => {
                 if let Some(&idx) = self.id_to_index.get(&task_id)
-                    && let Some(a) = self.state.agents.get_mut(idx) {
-                        a.banner = banner;
-                    }
+                    && let Some(a) = self.state.agents.get_mut(idx)
+                {
+                    a.banner = banner;
+                }
+            }
+            MultiAgentUpdate::SetLogFiles {
+                task_id,
+                stdout,
+                stderr,
+            } => {
+                if let Some(&idx) = self.id_to_index.get(&task_id)
+                    && let Some(a) = self.state.agents.get_mut(idx)
+                {
+                    a.log_src.set_log_files(stdout, stderr);
+                }
+            }
+            MultiAgentUpdate::BumpRouteCount { task_id } => {
+                if let Some(&idx) = self.id_to_index.get(&task_id)
+                    && let Some(a) = self.state.agents.get_mut(idx)
+                {
+                    a.route_count = a.route_count.saturating_add(1);
+                }
             }
         }
     }
@@ -265,7 +325,7 @@ impl MultiAgentDashboard {
     fn all_agents_terminal(&self) -> bool {
         self.state.agents.iter().all(|a| match a.status {
             AgentStatus::Done | AgentStatus::Error => true,
-            AgentStatus::Running | AgentStatus::Paused => false,
+            AgentStatus::Queued | AgentStatus::Running | AgentStatus::Paused => false,
         })
     }
 }

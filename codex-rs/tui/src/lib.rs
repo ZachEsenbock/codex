@@ -49,6 +49,7 @@ mod markdown_stream;
 mod multi_agent_dashboard;
 pub mod onboarding;
 mod pager_overlay;
+mod planner_panel;
 mod render;
 mod session_log;
 mod shimmer;
@@ -72,6 +73,9 @@ pub use multi_agent_dashboard::DashboardAgentStatus;
 pub use multi_agent_dashboard::MultiAgentCallbacks;
 pub use multi_agent_dashboard::MultiAgentDashboard;
 pub use multi_agent_dashboard::MultiAgentUpdate;
+pub use planner_panel::PlannerDashboard;
+pub use planner_panel::PlannerStatus;
+pub use planner_panel::PlannerUpdate;
 
 use crate::onboarding::TrustDirectorySelection;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;

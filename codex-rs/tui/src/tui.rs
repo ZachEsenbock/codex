@@ -18,12 +18,15 @@ use crossterm::SynchronizedUpdate;
 use crossterm::cursor;
 use crossterm::cursor::MoveTo;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
 use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
@@ -49,6 +52,8 @@ pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
 
 pub fn set_modes() -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
+    // Enable mouse capture so scroll wheel and clicks are reported.
+    let _ = execute!(stdout(), EnableMouseCapture);
 
     enable_raw_mode()?;
     // Enable keyboard enhancement flags so modifiers for keys like Enter are disambiguated.
@@ -116,6 +121,8 @@ pub fn restore() -> Result<()> {
     // Pop may fail on platforms that didn't support the push; ignore errors.
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     execute!(stdout(), DisableBracketedPaste)?;
+    // Disable mouse capture on exit; ignore errors if unsupported.
+    let _ = execute!(stdout(), DisableMouseCapture);
     disable_raw_mode()?;
     let _ = execute!(stdout(), crossterm::cursor::Show);
     Ok(())
@@ -154,6 +161,7 @@ pub enum TuiEvent {
     Key(KeyEvent),
     Paste(String),
     Draw,
+    Mouse(MouseEvent),
     AttachImage {
         path: PathBuf,
         width: u32,
@@ -359,6 +367,9 @@ impl Tui {
                                     continue;
                                 }
                                 yield TuiEvent::Key(key_event);
+                            }
+                            Event::Mouse(mouse_event) => {
+                                yield TuiEvent::Mouse(mouse_event);
                             }
                             Event::Resize(_, _) => {
                                 yield TuiEvent::Draw;

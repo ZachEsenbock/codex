@@ -38,6 +38,11 @@ impl Default for SubAgentOptions {
             Err(_) => Vec::new(),
         };
         extra_args.push("--skip-git-repo-check".into());
+        // Default to enabling network access for the workspace-write sandbox
+        // used by sub-agents (and the planner). This keeps disk writes scoped
+        // while allowing HTTP requests when needed.
+        extra_args.push("-c".into());
+        extra_args.push("sandbox_workspace_write.network_access=true".into());
 
         Self {
             codex_bin: std::env::var("CODEX_TASK_SUBAGENT_BIN").unwrap_or_else(|_| "codex".into()),

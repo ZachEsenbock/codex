@@ -158,6 +158,9 @@ impl App {
                     self.chat_widget
                         .attach_image(path, width, height, format_label);
                 }
+                TuiEvent::Mouse(_) => {
+                    // Ignore mouse events in the main app for now.
+                }
             }
         }
         Ok(true)

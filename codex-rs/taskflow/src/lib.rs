@@ -6,6 +6,7 @@ pub mod output;
 pub mod planner;
 pub mod runner;
 pub mod schema;
+mod spool;
 pub mod subagent;
 
 pub use dag::Dag;

@@ -16,8 +16,9 @@
 
 - **Key hints and prompts:** Use `cyan` (e.g., "Ctrl+C to pause" -> `"Ctrl+C".cyan()` and surrounding text dimmed).
 - **Statuses:**
-  - Running: default or `green` for short labels (avoid over‑coloring long logs).
-  - Paused: `yellow` to clearly differentiate the interactive state.
+  - Queued: default/plain (avoid extra color for pre‑start).
+  - Running: default for ongoing output; keep logs uncolored.
+  - Paused: `cyan` to match key hints and interactive state.
   - Done/Success: `green` (consider `.dim()` for reduced emphasis in lists).
   - Error: `red`.
 - **Routed banners:** Keep subtle; prefer `magenta` for the "routed" keyword and `cyan` for task IDs.
@@ -26,7 +27,7 @@
 Examples (using `Stylize` helpers):
 
 - `vec!["» routed from ".into(), src_id.cyan(), " (".dim(), bytes.to_string().dim(), ")".dim()]`
-- `"Paused".cyan()`; `"Done".green().dim()`; `"Error".red()`
+- `"Queued".into()`; `"Paused".cyan()`; `"Done".green().dim()`; `"Error".red()`
 
 ## Components
 

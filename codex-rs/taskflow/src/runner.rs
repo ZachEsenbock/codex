@@ -7,6 +7,7 @@ use crate::output::StreamKind;
 use crate::schema::AgentSpec;
 use crate::schema::TaskFile;
 use crate::schema::TaskSpec;
+use crate::spool::RoutedSpool;
 use crate::subagent::detect_supports_approval_flag;
 use crate::subagent::SubAgentController;
 use crate::subagent::SubAgentEventCtx;
@@ -127,6 +128,9 @@ impl<'a> Runner<'a> {
             std::sync::Arc::new(RwLock::new(BTreeMap::new()));
         let (route_tx, mut route_rx) = mpsc::unbounded_channel::<RouteEvent>();
 
+        // Routed message spool: queues messages for tasks that haven't started yet.
+        let spool = std::sync::Arc::new(RoutedSpool::new(self.opts.base_run_dir.clone()));
+
         // Optional dashboard across the entire run when --ui is enabled.
         let mut ui_tx_opt: Option<UnboundedSender<MultiAgentUpdate>> = None;
         let mut ui_task_opt: Option<tokio::task::JoinHandle<std::io::Result<()>>> = None;
@@ -206,12 +210,23 @@ impl<'a> Runner<'a> {
 
             ui_tx_opt = Some(ui_tx);
             ui_task_opt = Some(ui_handle);
+
+            // Initialize all agents as Queued in the UI before any tasks start.
+            if let Some(tx) = &ui_tx_opt {
+                for t in &self.tf.tasks {
+                    let _ = tx.send(MultiAgentUpdate::SetStatus {
+                        task_id: t.id.clone(),
+                        status: DashboardAgentStatus::Queued,
+                    });
+                }
+            }
         }
 
         // Router task: consume routed messages and deliver to targets for the whole run
         let controllers_for_router = controllers.clone();
         let streams_for_router = streams.clone();
         let ui_for_router = ui_tx_opt.clone();
+        let spool_for_router = spool.clone();
         let router_task = tokio::spawn(async move {
             while let Some(ev) = route_rx.recv().await {
                 // Record a routed event in the source task's events.ndjson
@@ -247,6 +262,9 @@ impl<'a> Runner<'a> {
                         task_id: ev.from_task_id.clone(),
                         banner: Some(banner_src),
                     });
+                    let _ = tx.send(MultiAgentUpdate::BumpRouteCount {
+                        task_id: ev.from_task_id.clone(),
+                    });
                 }
 
                 if let Some(tgt_ctrl) = controllers_for_router.read().await.get(&ev.to_task_id) {
@@ -271,11 +289,17 @@ impl<'a> Runner<'a> {
                             task_id: ev.to_task_id.clone(),
                             banner: Some(banner_tgt),
                         });
+                        let _ = tx.send(MultiAgentUpdate::BumpRouteCount {
+                            task_id: ev.to_task_id.clone(),
+                        });
                     }
                     // Best-effort: pause, inject, and resume
                     let mut ctrl = tgt_ctrl.lock().await;
                     let _ = ctrl.pause().await;
                     let _ = ctrl.inject_then_resume(&ev.body).await;
+                } else {
+                    // Target not started yet: spool for future delivery.
+                    let _ = spool_for_router.append(&ev.to_task_id, &ev.body).await;
                 }
             }
         });
@@ -302,6 +326,7 @@ impl<'a> Runner<'a> {
                 let controllers = controllers.clone();
                 let streams = streams.clone();
                 let route_tx = route_tx.clone();
+                let spool_for_task = spool.clone();
                 let ui_tx_for_task = ui_for_tasks.clone();
 
                 if !self.opts.ui {
@@ -326,6 +351,7 @@ impl<'a> Runner<'a> {
                         controllers,
                         streams,
                         route_tx,
+                        spool_for_task,
                         ui_tx_for_task,
                     )
                     .await
@@ -440,6 +466,7 @@ async fn execute_with_retries_routed(
     >,
     streams: std::sync::Arc<RwLock<BTreeMap<String, AgentStream>>>,
     route_tx: mpsc::UnboundedSender<RouteEvent>,
+    spool: std::sync::Arc<RoutedSpool>,
     ui_tx: Option<UnboundedSender<MultiAgentUpdate>>,
 ) -> Result<(), TaskError> {
     let retries = task.retries.unwrap_or(opts.retries);
@@ -484,6 +511,13 @@ async fn execute_with_retries_routed(
             .write()
             .await
             .insert(task.id.clone(), stream.clone());
+        // Transition status to Running before we start streaming
+        if let Some(tx) = &ui_tx {
+            let _ = tx.send(MultiAgentUpdate::SetStatus {
+                task_id: task.id.clone(),
+                status: DashboardAgentStatus::Running,
+            });
+        }
         // Send initial snapshot to UI
         if let Some(tx) = &ui_tx {
             let snap = stream.snapshot().await;
@@ -536,14 +570,45 @@ async fn execute_with_retries_routed(
             .create(true)
             .write(true)
             .truncate(true)
-            .open(out_log_path)
+            .open(out_log_path.clone())
             .await?;
         let mut err_file = tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(err_log_path)
+            .open(err_log_path.clone())
             .await?;
+
+        // Provide log file paths to the UI so it can page older content from disk
+        if let Some(tx) = &ui_tx {
+            let _ = tx.send(MultiAgentUpdate::SetLogFiles {
+                task_id: task.id.clone(),
+                stdout: out_log_path.clone(),
+                stderr: err_log_path.clone(),
+            });
+        }
+
+        // Before we start consuming child output, deliver any spooled routed messages
+        // that were sent to this task before it started. Messages are newline-delimited.
+        if let Ok(queued) = spool.take_all(&task.id).await {
+            if !queued.is_empty() {
+                let combined = queued.join("\n");
+                let mut ctrl = ctrl_arc.lock().await;
+                let _ = ctrl.inject_then_resume(&combined).await;
+
+                // Optional: show a banner in the UI indicating delivery
+                if let Some(tx) = &ui_tx {
+                    let banner = RtLine::from(vec![RtSpan::raw(format!(
+                        " Delivered {} spooled message(s)",
+                        queued.len()
+                    ))]);
+                    let _ = tx.send(MultiAgentUpdate::SetBanner {
+                        task_id: task.id.clone(),
+                        banner: Some(banner),
+                    });
+                }
+            }
+        }
 
         let show_output = opts.subagent.show_output;
         let stream_out = stream.clone();
@@ -720,6 +785,60 @@ async fn execute_with_retries_routed(
                 // Backoff between retries
                 sleep(Duration::from_millis(500 * attempt as u64)).await;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_tui::MultiAgentUpdate;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn test_set_logfiles_update_paths() {
+        // Create a unique temp run dir
+        let base = std::env::temp_dir()
+            .join(format!("codex_task_test_{}", Uuid::new_v4().to_string()));
+        let run_dir = base.join("attempt-1");
+        let _ = tokio::fs::create_dir_all(&run_dir).await;
+
+        // Create stdout/stderr log files like the runner does
+        let stdout_path = run_dir.join("stdout.log");
+        let stderr_path = run_dir.join("stderr.log");
+        let _ = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&stdout_path)
+            .await
+            .expect("create stdout.log");
+        let _ = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&stderr_path)
+            .await
+            .expect("create stderr.log");
+
+        // Simulate notifying the UI
+        let (tx, mut rx) = mpsc::unbounded_channel::<MultiAgentUpdate>();
+        let task_id = "t1".to_string();
+        tx.send(MultiAgentUpdate::SetLogFiles {
+            task_id: task_id.clone(),
+            stdout: stdout_path.clone(),
+            stderr: stderr_path.clone(),
+        })
+        .expect("send update");
+
+        // Verify the update content matches the created paths
+        match rx.try_recv() {
+            Ok(MultiAgentUpdate::SetLogFiles { task_id: id, stdout, stderr }) => {
+                assert_eq!(id, task_id);
+                assert_eq!(stdout, stdout_path);
+                assert_eq!(stderr, stderr_path);
+            }
+            other => panic!("unexpected update: {other:?}"),
         }
     }
 }

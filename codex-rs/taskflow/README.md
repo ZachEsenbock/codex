@@ -32,10 +32,19 @@ codex-task run --ui ./examples/task.simple.md
  - Toggle layout with `--ui-layout=tabbed|grid` (tabbed is the default). The `grid` layout may be a no‑op placeholder initially.
  - Without `--ui`, non‑UI mode remains unchanged.
 
+Planner overlay (when auto‑planning):
+
+- If your task definition uses auto‑planning, enabling `--ui` shows a lightweight, full‑screen planner overlay while the planner runs.
+- Visuals: a single pane with header "Planning…" (cyan), optional banner for errors/warnings, and a scrollable log area.
+- Keys: PageUp/PageDown/Home/End scroll the planner log; `Esc` is ignored; there is no input composer.
+- On success, the overlay closes and the normal dashboard starts. On failure, the overlay shows an error banner and exits non‑zero.
+- Planner logs continue to be written under `~/.codex/planner-logs/` (`stdout.log`, `stderr.log`).
+
 Flags summary:
 
 - `--ui`: enable the interactive dashboard.
 - `--ui-layout=tabbed|grid`: select layout (grid may be a placeholder).
+ - Network access: sub‑agents (including the planner) run with the workspace‑write sandbox and network enabled by default. This keeps writes scoped to the repo/TMP while allowing HTTP. Override with `-c sandbox_workspace_write.network_access=false` or `--sandbox read-only|danger-full-access`.
 
 Keybinds (minimal set, consistent with codex‑cli):
 
@@ -45,8 +54,11 @@ Keybinds (minimal set, consistent with codex‑cli):
 - Tab / Shift+Tab: cycle focus across agents.
 - 1–9: jump directly to an agent by index.
 - `w`: toggle the watch split; when open, arrows or 1–9 select the watch target.
+ - PageUp / PageDown / Home / End: scroll logs. When scrollback extends beyond in‑memory buffers, older content is paged from on‑disk attempt logs.
+ - q (after completion): when all sub‑agents are Done/Error, the dashboard shows “All agents complete — press q to quit”; press `q` to close the UI.
+ - Ctrl+Q: aborts immediately (kills active sub‑agents) and exits the UI.
 
-Styling follows `codex-rs/tui/styles.md` (use `Stylize` helpers; cyan key hints; green success; red errors).
+Styling follows `codex-rs/tui/styles.md` (use `Stylize` helpers; cyan key hints; status chips: Queued default/plain, Paused cyan, Done green, Error red).
 
 ### Quick walkthrough
 
@@ -64,6 +76,16 @@ Styling follows `codex-rs/tui/styles.md` (use `Stylize` helpers; cyan key hints;
 
 5. Toggle the watch split with `w` to tail another agent in a secondary read‑only pane. Use 1–9 or arrows to change the watched agent. Only the focused agent accepts input.
 
+Statuses:
+
+- Agents initialize as `Queued` before they start running; the sidebar shows a concise `Q` chip.
+- When a task starts, it transitions to `Running` (`R` in the sidebar). `Paused` shows `P`, `Done` shows `D`, and `Error` shows `E`.
+
+Scrolling and full history:
+
+- Use PageUp/PageDown/Home/End to scroll within a pane. Both the primary and watch panes support scrolling.
+- Each agent view maintains a live tail plus full‑history scrollback by paging from the current attempt’s log files (`stdout.log` and `stderr.log`). Older content is loaded incrementally from disk when you scroll beyond the in‑memory head; the entire file is not loaded at once.
+
 ## Inter‑agent routing protocol
 
 Agents can send guidance to a peer by printing a routed block to stdout:
@@ -78,10 +100,23 @@ The runner parses these blocks and delivers the `<message>` to the target agent 
 
 When routing occurs, the runner records a `routed` event (see Events below) and pushes a small banner line into both source and target streams (visible in the dashboard scrollback).
 
+Routing to future‑wave agents:
+
+- If a routed message targets an agent that has not started yet, the runner spools the message for delivery when that agent begins.
+- Spool persistence: messages are appended under the run directory so they survive long runs and restarts:
+
+  `~/.codex/task-runs/<run_id>/spool/<target_task_id>.txt`
+
+- On agent start, any spooled lines for that task are injected before consuming child output. After successful delivery, the in‑memory and on‑disk spools are cleared.
+
 Example banner text (source/target panes):
 
 - Source: `» routed to <task_id> (<N> bytes)`
 - Target: `» routed from <task_id> (<N> bytes)`
+
+UI visibility:
+
+- The sidebar and pane headers show a `↔ <count>` indicator per agent reflecting peer messages routed to or from that agent during the run.
 
 Tip: You can paste a routed block directly into a paused composer to send a message on behalf of the focused agent.
 
@@ -119,7 +154,7 @@ Press `w` to toggle a secondary read‑only pane that tails another agent’s ou
 
 - Use arrow keys or 1–9 to select which agent to watch.
 - Only the focused (primary) agent accepts input and can be paused/injected.
-- Each agent maintains independent scrollback and status (Running/Paused/Done/Error).
+- Each agent maintains independent scrollback and status (Queued/Running/Paused/Done/Error).
 
 Hints:
 
@@ -138,6 +173,10 @@ Per‑attempt logs are written under `attempt-<N>/`:
 
 - `attempt-1/stdout.log`
 - `attempt-1/stderr.log`
+
+Spool files (for inter‑wave routing) are stored per run under:
+
+- `~/.codex/task-runs/<run_id>/spool/<task_id>.txt`
 
 Structured events for the task are appended to `events.ndjson` at the task’s run directory (one line of JSON per event):
 

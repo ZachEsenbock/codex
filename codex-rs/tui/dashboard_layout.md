@@ -33,6 +33,14 @@ Cons:
 - Tab / Shift+Tab: cycle focus across agents.
 - 1–9: jump directly to an agent by index.
 - `w`: toggle the watch split; when open, arrows or numbers select the watch target.
+ - PageUp / PageDown / Home / End: scroll logs (primary and watch panes). When scrollback exceeds in‑memory buffers, older content is paged from disk.
+
+## Planner Overlay Lifecycle
+
+- When `--ui` is enabled and the run uses auto‑planning, a minimal planner overlay appears before the main dashboard.
+- Visuals: single‑pane view with header "Planning…" (cyan), optional banner for errors/warnings, and a scrollable log area.
+- Behavior: streams planner stdout/stderr lines; PageUp/PageDown/Home/End scroll; `Esc` is ignored; no input composer.
+- Exit: on success, the overlay closes and hands off to the multi‑agent dashboard; on failure, an error banner is shown and the process exits non‑zero. Planner logs are still written to `~/.codex/planner-logs/`.
 
 ## Future Path to Grid Toggle
 
@@ -44,8 +52,13 @@ Cons:
 ## Implementation Notes
 
 - Rendering: use ratatui layout splits. Primary pane takes remaining space after sidebar; watch pane, when enabled, splits the primary region vertically.
-- State: maintain per‑agent scrollback buffers and status (Running/Paused/Done/Error). The watch pane is strictly read‑only.
-- Styling: follow `styles.md` and prefer `Stylize` helpers (e.g., "Paused".yellow(), dim separators, cyan key hints).
+- State: maintain per‑agent scrollback buffers and status (Queued/Running/Paused/Done/Error). The watch pane is strictly read‑only.
+- Styling: follow `styles.md` and prefer `Stylize` helpers (e.g., concise status chips: Queued default/plain, Paused cyan, Done green, Error red; dim separators; cyan key hints).
+
+### Log Paging Model
+
+- Each agent pane renders a live tail plus full‑history scrollback by paging from its current attempt log files (`stdout.log`, `stderr.log`).
+- Scrolling beyond the in‑memory ring triggers incremental reads from disk; pages are prepended to the view buffer to keep memory bounded. The entire file is not loaded at once.
+- The same scroll controls apply to the watch pane.
 
 This layout balances readability and complexity now, while leaving a clear path to an optional grid view later.
-

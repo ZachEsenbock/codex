@@ -1,11 +1,20 @@
 use crate::error::TaskError;
+use crate::output::AgentStream;
+use crate::output::StreamKind;
 use crate::schema::AgentSpec;
 use crate::schema::TaskFile;
 use crate::schema::TaskSpec;
 use crate::subagent::run_subagent;
+use crate::subagent::run_subagent_streaming;
 use crate::subagent::SubAgentOptions;
+use codex_tui::PlannerStatus;
+use codex_tui::PlannerUpdate;
+use ratatui::style::Stylize as _;
+use ratatui::text::Line as RtLine;
+use ratatui::text::Span as RtSpan;
 use regex::Regex;
 use std::path::PathBuf;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Select a primary agent: prefer id == "primary", otherwise the first agent.
 fn select_primary_agent(agents: &[AgentSpec]) -> Option<&AgentSpec> {
@@ -25,6 +34,7 @@ pub async fn auto_plan_tasks(
     task_body: &str,
     default_cwd: &PathBuf,
     subagent: &SubAgentOptions,
+    ui_tx: Option<UnboundedSender<PlannerUpdate>>,
 ) -> Result<Vec<TaskSpec>, TaskError> {
     let primary = select_primary_agent(&tf.agents)
         .ok_or_else(|| TaskError::InvalidTaskFile("no agents defined".to_string()))?;
@@ -87,7 +97,69 @@ Constraints:
 
     // Run the planner agent.
     let _ = tokio::fs::create_dir_all(&log_dir).await;
-    let res = run_subagent(&workdir, primary, &task, subagent, &log_dir).await?;
+
+    // If a UI is attached, stream lines to it while writing logs.
+    let res = if let Some(tx) = ui_tx.clone() {
+        // Initial empty snapshot
+        let _ = tx.send(PlannerUpdate::Snapshot {
+            log: Vec::new(),
+            status: PlannerStatus::Running,
+            banner: None,
+        });
+
+        // Set up an in-memory stream and forward updates to the planner overlay.
+        let stream = AgentStream::new(2000);
+        let mut rx = stream.subscribe();
+
+        // Forwarder task for live updates.
+        let tx_out = tx.clone();
+        let forward_task = tokio::spawn(async move {
+            while let Ok(item) = rx.recv().await {
+                match item.kind {
+                    StreamKind::Stdout => {
+                        let _ = tx_out.send(PlannerUpdate::AppendLines {
+                            lines: vec![RtLine::from(item.text.clone())],
+                        });
+                    }
+                    StreamKind::Stderr => {
+                        let _ = tx_out.send(PlannerUpdate::AppendLines {
+                            lines: vec![RtLine::from(vec![RtSpan::raw(item.text.clone()).red()])],
+                        });
+                    }
+                }
+            }
+        });
+
+        // Execute with streaming into our AgentStream
+        let res =
+            run_subagent_streaming(&workdir, primary, &task, subagent, &log_dir, Some(stream))
+                .await;
+
+        // Ensure the forwarder drains and exits
+        let _ = forward_task.await;
+
+        // On error, surface an error banner before returning
+        match res {
+            Ok(ok) => {
+                let _ = tx.send(PlannerUpdate::SetStatus {
+                    status: PlannerStatus::Done,
+                });
+                Ok(ok)
+            }
+            Err(e) => {
+                let _ = tx.send(PlannerUpdate::SetStatus {
+                    status: PlannerStatus::Error,
+                });
+                let msg = format!("Error: {e}");
+                let _ = tx.send(PlannerUpdate::SetBanner {
+                    banner: Some(RtLine::from(vec![RtSpan::raw(msg).red()])),
+                });
+                Err(e)
+            }
+        }?
+    } else {
+        run_subagent(&workdir, primary, &task, subagent, &log_dir).await?
+    };
 
     // Extract candidate YAML snippets from stdout and try to parse them.
     // When multiple candidates exist (e.g., due to retries/partial outputs),
